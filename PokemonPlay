@@ -1,0 +1,681 @@
+import random
+import re
+import time
+import threading
+from telebot import types
+import telebot
+
+# ТОКЕН БОТА (Обязательно вставь сюда свой токен из BotFather)
+TOKEN = "8941765413:AAH_YTtPPG8dOq1FaIysxksx9QHTwpXnkFw"
+bot = telebot.TeleBot(TOKEN)
+
+# =====================================================================
+# 1. ОПИСАНИЕ КЛАССА ПОКЕМОНА
+# =====================================================================
+class Pokemon:
+    def __init__(self, name):
+        self.name = name
+        self.level = 1.0
+        self.max_hp = random.randint(115, 350)  # Большой запас здоровья для кликера
+        self.hp = self.max_hp
+        self.attack = random.randint(8, 14)    # Сколько урона наносит один клик
+
+    def info(self):
+        return f"👾 Покемон: {self.name}\n⭐ Уровень: {self.level}\n❤️ Здоровье: {self.hp}/{self.max_hp}\n⚔️ Сила клика: {self.attack}"
+
+    def show_img(self):
+        return f"https://githubusercontent.com{random.randint(1, 151)}.png"
+
+# Глобальные базы данных игры
+RANDOM_POKEMONS = ["Pikachu", "Bulbasaur", "Charmander", "Squirtle", "Eevee", "Mewtwo", "Gengar", "Mandarin", "Drakula", "Thunki", "Sefare", "Pokariko"]
+users_data = {}       # База профилей игроков
+active_lobbies = {}   # Ожидающие комнаты для друзей
+active_battles = {}   # Текущие активные сессии кликов
+search_sessions = {}
+
+@bot.message_handler(commands=['start'])
+def send_welcome(message):
+    username = message.from_user.username if message.from_user.username else message.from_user.first_name
+
+    # Если игрока вообще нет в базе данных, создаем ему базовый профиль
+    if username not in users_data:
+        users_data[username] = {
+            "chat_id": message.chat.id,
+            "coins": 0,
+            "quests": {
+                "wins": {"current": 0, "done": False},
+                "clicks": {"current": 0, "done": False}
+            }
+            # Если у вас тут были другие поля (например, "pokemon"), допишите их сюда через запятую
+        }
+    else:
+        # Если игрок уже есть, мы ОСТАВЛЯЕМ ВСЕ ЕГО МОНЕТЫ И КВЕСТЫ,
+        # и просто дописываем/обновляем числовой chat_id для поисковика
+        users_data[username]["chat_id"] = message.chat.id
+
+    bot.reply_to(message, "Привет! Я твой игровой покемон-бот. Используй /go чтобы получить стартового питомца!\n\nДля поиска соперников используй: /search", parse_mode="Markdown")
+
+@bot.message_handler(commands=['info'])
+def send_info(message):
+    info_text = (
+        "⚡ ═══ ИНФОРМАЦИЯ О PokemonPlay ═══ ⚡\n\n"
+        "👑 Статус: Игровой робот\n"
+        "🚀 Версия: 1.0.3\n"
+        "🧠 Ядро: Написано на чистом Python\n"
+        "🍊 Компания: Mandarin.Studio\n"
+        "❓Что нового: Поиск игроков, исправлены баги!"
+    )
+    bot.send_message(message.chat.id, info_text)
+
+@bot.message_handler(commands=['go'])
+@bot.message_handler(func=lambda msg: msg.text and msg.text.lower() == "начать")
+def go(message):
+    username = message.from_user.username or message.from_user.first_name
+    chat_id = message.chat.id
+
+    if username not in users_data:
+        pokemon_name = random.choice(RANDOM_POKEMONS)
+        pokemon_instance = Pokemon(pokemon_name)
+
+        # Инициализируем профиль игрока со стартовым балансом и квестами
+        users_data[username] = {
+            "chat_id": chat_id,
+            "pokemon": pokemon_instance,
+            "coins": 0.0,
+            "quests": {
+                "clicks": {"target": 100, "current": 0, "reward": 100, "done": False},
+                "wins": {"target": 7, "current": 0, "reward": 150, "done": False}
+            }
+        }
+        bot.send_message(chat_id, f"🎉 Поздравляем! Вы получили своего стартового покемона!\n\n{pokemon_instance.info()}", parse_mode="Markdown")
+        try:
+            bot.send_photo(chat_id, pokemon_instance.show_img())
+        except Exception:
+            pass
+    else:
+        bot.reply_to(message, "⚠️ А у вас уже есть покемон! Введите команду /fight чтобы начать сражение, или /shop для прокачки.")
+
+# =====================================================================
+# 3. ПРАВИЛА И МЕНЮ БИТВЫ
+# =====================================================================
+@bot.message_handler(func=lambda msg: msg.text and msg.text.lower() == "pokemon play")
+def pokemon_play_guide(message):
+    guide_text = (
+        "📜 *ПРАВИЛА ИГРЫ И КЛИК-БИТВЫ:*\n\n"
+        "🎯 *Главная цель:* Быстро нажимать на специальную кнопку во время обратного отсчета таймера. Чем больше кликов сделаешь — тем больше урона нанесет твой покемон!\n\n"
+        "⚙️ *Команды в чате:*\n"
+        "├ `/go` — получить своего первого покемона.\n"
+        "├ `/fight` — открыть меню выбора битвы (с Роботом или с Другом).\n"
+        "├ `/shop` — магазин прокачки силы и здоровья.\n"
+        "├ `/quests` — список текущих заданий за награду.\n"
+        "├ `/profile` — твой профиль.\n"
+        "├ `/info` — информацыя о боте.\n"
+        "└ `join <код>` — ввести секретный код комнаты, чтобы подключиться к игре друга.\n"
+    )
+    bot.send_message(message.chat.id, guide_text, parse_mode="Markdown")
+
+@bot.message_handler(commands=['search'])
+def show_all_players(message):
+    current_username = message.from_user.username or message.from_user.first_name
+
+    # Собираем всех игроков из вашей базы данных
+    all_players = list(users_data.keys())
+
+    # Исключаем самого себя из списка, чтобы нельзя было вызвать себя
+    if current_username in all_players:
+        all_players.remove(current_username)
+
+    if not all_players:
+        bot.reply_to(message, "😔 В боте пока нет других зарегистрированных игроков.")
+        return
+
+    # Создаем инлайн-кнопки со списком ВСЕХ игроков
+    markup = types.InlineKeyboardMarkup(row_width=2)
+    for name in all_players:
+        # При нажатии передаем ник игрока
+        button = types.InlineKeyboardButton(text=f"🎮 {name}", callback_data=f"select_{name}")
+        markup.add(button)
+
+    bot.reply_to(message, "✨ Выберите игрока, которого хотите вызвать на битву:", reply_markup=markup)
+
+
+@bot.message_handler(commands=['fight'])
+def fight_menu(message):
+    username = message.from_user.username or message.from_user.first_name
+
+    if username not in users_data:
+        bot.send_message(message.chat.id, "❌ У вас еще нет покемона! Сначала введите команду /go", parse_mode="Markdown")
+        return
+
+    markup = types.InlineKeyboardMarkup(row_width=2)
+    btn_bot = types.InlineKeyboardButton("🤖 Клик-бой с Роботом", callback_data="mode_bot")
+    btn_friend = types.InlineKeyboardButton("👥 Клик-бой с Другом", callback_data="mode_friend")
+    markup.add(btn_bot, btn_friend)
+
+    bot.send_message(message.chat.id, "⚔️ *Выбери режим клик-сражения:*", reply_markup=markup, parse_mode="Markdown")
+
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("mode_") or call.data.startswith("click_"))
+def handle_callbacks(call):
+    username = call.from_user.username or call.from_user.first_name
+    chat_id = call.message.chat.id
+    msg_id = call.message.message_id
+
+    if "quests" in users_data[username] and not users_data[username]["quests"]["clicks"]["done"]:
+                          users_data[username]["quests"]["clicks"]["current"] += 1
+
+    # --- Нажата кнопка: Бой с Роботом ---
+    if call.data == "mode_bot":
+        try:
+            bot.edit_message_reply_markup(chat_id, msg_id, reply_markup=None)
+        except Exception:
+            pass
+
+        my_pokemon = users_data[username]["pokemon"]
+        enemy_name = random.choice(RANDOM_POKEMONS)
+        enemy_pokemon = Pokemon(enemy_name)
+
+        battle_id = f"bot_{username}_{int(time.time())}"
+        active_battles[battle_id] = {
+            "type": "bot",
+            "p1": username,
+            "p1_chat": chat_id,
+            "p1_clicks": 0,
+            "bot_clicks": 0,
+            "is_active": True
+        }
+
+        # Запускаем таймер боя в отдельном потоке
+        threading.Thread(target=start_countdown_bot, args=(chat_id, battle_id, my_pokemon, enemy_pokemon), daemon=True).start()
+
+    # --- Нажата кнопка: Бой с Другом (Создание комнаты) ---
+    elif call.data == "mode_friend":
+        try:
+            bot.edit_message_reply_markup(chat_id, msg_id, reply_markup=None)
+        except Exception:
+            pass
+
+        lobby_id = str(random.randint(1000, 9999))
+        active_lobbies[lobby_id] = {
+            "player1": username,
+            "player1_chat": chat_id,
+            "player2": None,
+            "player2_chat": None
+        }
+
+        bot.send_message(
+            chat_id,
+            f"🏰 *Вечеринка создана!*\n\nПерешли другу этот секретный код: `{lobby_id}`\n\n"
+            f"Чтобы подключиться к тебе, твой друг должен отправить боту сообщение: `join {lobby_id}`",
+            parse_mode="Markdown"
+        )
+
+    # --- Нажата игровая кнопка кликера ---
+    elif call.data.startswith("click_"):
+        battle_id = call.data.replace("click_", "")
+
+        if battle_id in active_battles:
+            battle = active_battles[battle_id]
+            if not battle["is_active"]:
+                bot.answer_callback_query(call.id, "⏱ Время раунда уже вышло!")
+                return
+
+            # Засчитываем клик для одиночного боя
+            if battle["type"] == "bot" and battle["p1"] == username:
+                battle["p1_clicks"] += 1
+                if "quests" in users_data[username] and not users_data[username]["quests"]["clicks"]["done"]:
+                    users_data[username]["quests"]["clicks"]["current"] += 1
+                bot.answer_callback_query(call.id, f"⚡ Нажатие засчитано! Всего: {battle['p1_clicks']}")
+
+            # Засчитываем клик для ПвП боя
+            elif battle["type"] == "friend":
+                if battle["p1"] == username:
+                    battle["p1_clicks"] += 1
+                    if not users_data[username]["quests"]["clicks"]["done"]:
+                        users_data[username]["quests"]["clicks"]["current"] += 1
+                    bot.answer_callback_query(call.id, f"⚡ Твой клик засчитан! Всего: {battle['p1_clicks']}")
+                elif battle["p2"] == username:
+                    battle["p2_clicks"] += 1
+                    if not users_data[username]["quests"]["done"]:
+                        users_data[username]["quests"]["clicks"]["current"] += 1
+                    bot.answer_callback_query(call.id, f"⚡ Твой клик засчитан! Всего: {battle['p2_clicks']}")
+
+
+@bot.message_handler(func=lambda msg: msg.text and msg.text.lower().startswith("join "))
+def join_lobby(message):
+    username = message.from_user.username or message.from_user.first_name
+    chat_id = message.chat.id
+
+    if username not in users_data:
+        bot.reply_to(message, "❌ У вас нет покемона! Сначала создайте его командой /go")
+        return
+
+    # Извлекаем ID комнаты из текста сообщения
+    try:
+        lobby_id = message.text.split(" ")[1].strip()
+    except IndexError:
+        bot.reply_to(message, "❌ Укажите код комнаты. Пример: `join 1234`")
+        return
+
+    if lobby_id in active_lobbies:
+        lobby = active_lobbies[lobby_id]
+
+        if lobby["player1"] == username:
+            bot.reply_to(message, "⚠️ Вы не можете играть сами с собой!")
+            return
+
+        lobby["player2"] = username
+        lobby["player2_chat"] = chat_id
+
+        # Создаем сессию активного сражения двух игроков
+        battle_id = f"pvp_{lobby_id}"
+        active_battles[battle_id] = {
+            "type": "friend",
+            "p1": lobby["player1"],
+            "p1_chat": lobby["player1_chat"],
+            "p2": lobby["player2"],
+            "p2_chat": lobby["player2_chat"],
+            "p1_clicks": 0,
+            "p2_clicks": 0,
+            "is_active": True
+        }
+
+    # Оповещаем обоих оппонентов
+        bot.send_message(lobby["player1_chat"], f"⚔️ Игрок @{username} подключился к комнате! Приготовиться...")
+        bot.send_message(chat_id, f"⚔️ Вы успешно подключились к @{lobby['player1']}! Приготовиться...")
+
+        p1_poke = users_data[lobby["player1"]]["pokemon"]
+        p2_poke = users_data[username]["pokemon"]
+
+        # Удаляем комнату из списка ожидания и запускаем таймер дуэли
+        del active_lobbies[lobby_id]
+        threading.Thread(target=start_countdown_friend, args=(battle_id, p1_poke, p2_poke), daemon=True).start()
+    else:
+        bot.reply_to(message, "❌ Комната с таким кодом не найдена или игра уже началась.")
+
+# =====================================================================
+# 6. ФУНКЦИИ ТАЙМЕРОВ И ПОДВЕДЕНИЯ ИТОГОВ
+# =====================================================================
+def start_countdown_bot(chat_id, battle_id, my_pokemon, enemy_pokemon):
+    my_pokemon.hp = my_pokemon.max_hp
+
+    markup = types.InlineKeyboardMarkup()
+    markup.add(types.InlineKeyboardButton("💥 КЛИКАТЬ ТУТ КАК МОЖНО БЫСТРЕЕ! 💥", callback_data=f"click_{battle_id}"))
+
+    msg = bot.send_message(
+        chat_id,
+        f"⚔️ *БОЙ НАЧАЛСЯ!*\n\nБыстро-быстро нажимай на кнопку ниже!\n⏱ Осталось времени: 20 сек",
+        reply_markup=markup,
+        parse_mode="Markdown"
+    )
+
+    for t in range(19, -1, -1):
+        time.sleep(1)
+        try:
+            bot.edit_message_text(
+                f"⚔️ *БОЙ В САМОМ РАЗГАРЕ!*\n\nБыстро-быстро кликай на кнопку!\n⏱ Осталось времени: {t} сек",
+                chat_id, msg.message_id, reply_markup=markup, parse_mode="Markdown"
+            )
+        except Exception:
+            pass
+
+    try:
+        bot.edit_message_text("⏱ *ВРЕМЯ ВЫШЛО!* Считаем твои клики...", chat_id, msg.message_id, reply_markup=None, parse_mode="Markdown")
+    except Exception:
+        pass
+
+    time.sleep(1)
+
+    battle = active_battles.get(battle_id)
+    if not battle:
+        return
+
+    battle["is_active"] = False
+
+    user_clicks = battle.get("p1_clicks", 0)
+    bot_clicks = random.randint(8, 50)
+
+    user_damage = user_clicks * my_pokemon.attack
+    bot_damage = bot_clicks * enemy_pokemon.attack
+
+    enemy_pokemon.hp -= user_damage
+    my_pokemon.hp -= bot_damage
+
+    result_text = (
+        f"📊 *ИТОГИ КЛИК-РАУНДА:*\n\n"
+        f"👤 Ты накликал: *{user_clicks}* раз (Урон: {user_damage})\n"
+        f"🤖 Робот накликал: *{bot_clicks}* раз (Урон: {bot_damage})\n\n"
+        f"🛸 Твой {my_pokemon.name}: ({max(0, my_pokemon.hp)}/{my_pokemon.max_hp}) HP\n"
+        f"🤖 Робот {enemy_pokemon.name}: ({max(0, enemy_pokemon.hp)}/{enemy_pokemon.max_hp}) HP\n\n"
+    )
+
+    username = battle["p1"]
+    if user_damage > bot_damage:
+        coins = random.randint(25, 100)
+        users_data[username]["coins"] += coins
+        result_text += f"🏆 *ПОБЕДА!* Твои пальцы быстрее процессора! Ты разнес Робота!\n💰 Награда: +{coins} монет."
+        if not users_data[username]["quests"]["wins"]["done"]:
+            users_data[username]["quests"]["wins"]["current"] += 1
+    elif user_damage < bot_damage:
+        result_text += "👻 *ПОРАЖЕНИЕ!* Робот кликал быстрее тебя. Разминай пальцы к следующему разу!"
+    else:
+        result_text += "🤝 *НИЧЬЯ!* Вы кликали с абсолютно одинаковой скоростью!"
+
+    bot.send_message(chat_id, result_text, parse_mode="Markdown")
+    if battle_id in active_battles:
+        del active_battles[battle_id]
+
+def start_countdown_friend(battle_id, p1_poke, p2_poke):
+    battle = active_battles[battle_id]
+    markup = types.InlineKeyboardMarkup()
+    markup.add(types.InlineKeyboardButton("💥 ЖМИ СЮДА! 💥", callback_data=f"click_{battle_id}"))
+
+    msg1 = bot.send_message(battle["p1_chat"], "⚔️ *БОЙ НАЧАЛСЯ! КЛИКАЙ!* \n⏱ Осталось: 20 сек", reply_markup=markup, parse_mode="Markdown")
+    msg2 = bot.send_message(battle["p2_chat"], "⚔️ *БОЙ НАЧАЛСЯ! КЛИКАЙ!* \n⏱ Осталось: 20 сек", reply_markup=markup, parse_mode="Markdown")
+
+    for t in range(19, -1, -1):
+        time.sleep(1)
+        try:
+            bot.edit_message_text(f"⚔️ *КЛИК-БИТВА С ДРУГОМ!* \n⏱ Осталось: {t} сек", battle["p1_chat"], msg1.message_id, reply_markup=markup, parse_mode="Markdown")
+            bot.edit_message_text(f"⚔️ *КЛИК-БИТВА С ДРУГОМ!* \n⏱ Осталось: {t} сек", battle["p2_chat"], msg2.message_id, reply_markup=markup, parse_mode="Markdown")
+        except Exception:
+            pass
+
+    battle["is_active"] = False
+    try:
+        bot.edit_message_text("⏱ Время вышло! Считаем результаты дуэли...", battle["p1_chat"], msg1.message_id, reply_markup=None)
+        bot.edit_message_text("⏱ Время вышло! Считаем результаты дуэли...", battle["p2_chat"], msg2.message_id, reply_markup=None)
+    except Exception:
+        pass
+
+    time.sleep(1)
+
+    p1, p2 = battle["p1"], battle["p2"]
+    clicks1, clicks2 = battle["p1_clicks"], battle["p2_clicks"]
+    dmg1, dmg2 = clicks1 * p1_poke.attack, clicks2 * p2_poke.attack
+
+    res_text = (
+        f"👑 *РЕЗУЛЬТАТЫ ДУЭЛИ ДРУЗЕЙ:*\n\n"
+        f"🥇 @{p1}: {clicks1} кликов (Урон: {dmg1})\n"
+        f"🥈 @{p2}: {clicks2} кликов (Урон: {dmg2})\n\n"
+    )
+
+    if dmg1 > dmg2:
+        users_data[p1]["coins"] += 250
+        if not users_data[p1]["quests"]["wins"]["done"]:
+            users_data[p1]["quests"]["wins"]["current"] += 1
+        bot.send_message(battle["p1_chat"], res_text + "🏆 Вы победили друга и получили 250 монет!", parse_mode="Markdown")
+        bot.send_message(battle["p2_chat"], res_text + "😢 Вы проиграли дуэль.", parse_mode="Markdown")
+    elif dmg2 > dmg1:
+        users_data[p2]["coins"] += 250
+        if not users_data[p2]["quests"]["wins"]["done"]:
+            users_data[p2]["quests"]["wins"]["current"] += 1
+        bot.send_message(battle["p2_chat"], res_text + "🏆 Вы победили друга и получили 250 монет!", parse_mode="Markdown")
+        bot.send_message(battle["p1_chat"], res_text + "😢 Вы проиграли дуэль.", parse_mode="Markdown")
+    else:
+        bot.send_message(battle["p1_chat"], res_text + "🤝 Ничья! Оба игрока кликали одинаково.", parse_mode="Markdown")
+        bot.send_message(battle["p2_chat"], res_text + "🤝 Ничья! Оба игрока кликали одинаково.", parse_mode="Markdown")
+
+    if battle_id in active_battles:
+        del active_battles[battle_id]
+
+
+
+@bot.message_handler(commands=['profile'])
+@bot.message_handler(func=lambda msg: msg.text and msg.text.lower() == "профиль")
+def show_profile(message):
+    username = message.from_user.username or message.from_user.first_name
+    if username not in users_data:
+        bot.reply_to(message, "❌ У вас еще нет персонажа! Создайте его командой /go")
+        return
+
+    user = users_data[username]
+    pokemon = user["pokemon"]
+    coins = user["coins"]
+
+    profile_text = (
+        f"👤 *ИГРОВОЙ ПРОФИЛЬ ТРЕНЕРА: @{username}*\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"💰 Баланс: *{coins} монет*\n\n"
+        f"📋 *ТЕКУЩИЕ ХАРАКТЕРИСТИКИ:*\n"
+        f"├ 👾 Покемон: *{pokemon.name}*\n"
+        f"├ ⭐ Уровень: *{pokemon.level}*\n"
+        f"├ ❤️ Здоровье: *{pokemon.max_hp} HP*\n"
+        f"└ ⚔️ Сила клика: *{pokemon.attack} урона за клик*\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"💡 _Прокачать параметры можно в магазине: /shop_"
+    )
+
+    bot.send_message(message.chat.id, profile_text, parse_mode="Markdown")
+
+
+# 1. ФУНКЦИИ РАСЧЕТА ЦЕН (теперь работают через счетчик покупок в профиле)
+def get_dmg_price(username):
+    # Если счетчика покупок нет в базе, он считается равным 0
+    upgrades_count = users_data[username].get('dmg_upgrades', 0)
+
+    base_price = 25 + (upgrades_count * 50)
+    multiplier = 1 + (upgrades_count // 3)  # Каждые 3 покупки цена удваивается
+    return base_price * multiplier
+
+def get_hp_price(username):
+    upgrades_count = users_data[username].get('hp_upgrades', 0)
+
+    base_price = 45 + (upgrades_count * 50)
+    multiplier = 1 + (upgrades_count // 3)  # Каждые 3 покупки цена удваивается
+    return base_price * multiplier
+
+
+# 2. КОМАНДА ОТКРЫТИЯ МАГАЗИНА
+@bot.message_handler(commands=['shop'])
+def show_shop(message):
+    username = message.from_user.username or message.from_user.first_name
+
+    if username not in users_data:
+        bot.reply_to(message, "❌ Сначала создайте покемона через команду /go")
+        return
+
+    # Инициализируем счетчики улучшений в памяти, если это первая покупка игрока
+    if 'dmg_upgrades' not in users_data[username]:
+        users_data[username]['dmg_upgrades'] = 0
+    if 'hp_upgrades' not in users_data[username]:
+        users_data[username]['hp_upgrades'] = 0
+
+    coins = users_data[username]["coins"]
+    price_dmg = get_dmg_price(username)
+    price_hp = get_hp_price(username)
+
+    markup = types.InlineKeyboardMarkup(row_width=1)
+    markup.add(
+        types.InlineKeyboardButton(f"⚔️ +3 к Атаке клика ({price_dmg} монет)", callback_data="buy_dmg"),
+        types.InlineKeyboardButton(f"❤️ +100 к Макс. HP ({price_hp} монет)", callback_data="buy_hp")
+    )
+
+    bot.send_message(
+        message.chat.id,
+        f"🛒 *МАГАЗИН УЛУЧШЕНИЙ ПОКЕМОНА*\n\n💰 Твой баланс: {coins} монет(ы)\nВыбери параметр для прокачки:",
+        reply_markup=markup,
+        parse_mode="Markdown"
+    )
+
+
+# 3. ОБРАБОТЧИК НАЖАТИЙ НА КНОПКИ
+@bot.callback_query_handler(func=lambda call: call.data.startswith("buy_"))
+def handle_shop_buy(call):
+    username = call.from_user.username or call.from_user.first_name
+    chat_id = call.message.chat.id
+
+    if username not in users_data:
+        bot.answer_callback_query(call.id, "Профиль не найден.")
+        return
+
+    # Защита на случай, если зашли в магазин сразу после перезапуска бота
+    if 'dmg_upgrades' not in users_data[username]:
+        users_data[username]['dmg_upgrades'] = 0
+    if 'hp_upgrades' not in users_data[username]:
+        users_data[username]['hp_upgrades'] = 0
+
+    price_dmg = get_dmg_price(username)
+    price_hp = get_hp_price(username)
+
+    # ПОКУПКА АТАКИ
+    if call.data == "buy_dmg":
+        if users_data[username]["coins"] >= price_dmg:
+            users_data[username]["coins"] -= price_dmg
+
+            users_data[username]['dmg_upgrades'] += 1
+
+            # Изменяем параметры внутри объекта покемона через точку
+            users_data[username]["pokemon"].attack += 3
+            users_data[username]["pokemon"].level += 0.5
+
+            bot.send_message(chat_id, f"⚔️ Успешно! Сила клика увеличена на 3! Уровень покемона повышен до {users_data[username]['pokemon'].level}!")
+        else:
+            bot.send_message(chat_id, f"❌ У вас недостаточно монет для этого улучшения. Требуется: {price_dmg}")
+
+    # ПОКУПКА ЗДОРОВЬЯ
+    elif call.data == "buy_hp":
+        if users_data[username]["coins"] >= price_hp:
+            users_data[username]["coins"] -= price_hp
+
+            users_data[username]['hp_upgrades'] += 1
+
+            users_data[username]["pokemon"].max_hp += 50
+            users_data[username]["pokemon"].level += 1
+
+            bot.send_message(chat_id, f"❤️ Успешно! Максимальное здоровье увеличено на 100! Уровень покемона повышен до {users_data[username]['pokemon'].level}!")
+        else:
+            bot.send_message(chat_id, f"❌ У вас недостаточно монет для этого улучшения. Требуется: {price_hp}")
+
+
+    try:
+        next_price_dmg = get_dmg_price(username)
+        next_price_hp = get_hp_price(username)
+
+        updated_markup = types.InlineKeyboardMarkup(row_width=1)
+        updated_markup.add(
+            types.InlineKeyboardButton(f"⚔️ +3 к Атаке клика ({next_price_dmg} монет)", callback_data="buy_dmg"),
+            types.InlineKeyboardButton(f"❤️ +100 к Макс. HP ({next_price_hp} монет)", callback_data="buy_hp")
+        )
+
+        new_balance = users_data[username]["coins"]
+        bot.edit_message_text(
+            chat_id=chat_id,
+            message_id=call.message.message_id,
+            text=f"🛒 *МАГАЗИН УЛУЧШЕНИЙ ПОКЕМОНА*\n\n💰 Твой баланс: {new_balance} монет(ы)\nВыбери параметр для прокачки:",
+            reply_markup=updated_markup,
+            parse_mode="Markdown"
+        )
+        bot.answer_callback_query(call.id)
+    except Exception:
+        bot.answer_callback_query(call.id)
+
+
+@bot.message_handler(commands=['quests'])
+def show_quests(message):
+    username = message.from_user.username or message.from_user.first_name
+    if username not in users_data:
+        bot.reply_to(message, "❌ Сначала создайте покемона через /go")
+        return
+
+    q = users_data[username]["quests"]
+
+    # Проверяем выполнение квеста за клики
+    if q["clicks"]["current"] >= q["clicks"]["target"] and not q["clicks"]["done"]:
+        q["clicks"]["done"] = True
+        users_data[username]["coins"] += q["clicks"]["reward"]
+        bot.send_message(message.chat.id, f"👑 Квест выполнен! Вы накликали {q['clicks']['target']} раз и получили бонус: +{q['clicks']['reward']} монет!")
+
+    # Проверяем выполнение квеста за победы
+    if q["wins"]["current"] >= q["wins"]["target"] and not q["wins"]["done"]:
+        q["wins"]["done"] = True
+        users_data[username]["coins"] += q["wins"]["reward"]
+        bot.send_message(message.chat.id, f"👑 Квест выполнен! Вы одержали {q['wins']['target']} победы и получили бонус: +{q['wins']['reward']} монет!")
+
+    # Формируем текст БЕЗ Markdown, чтобы квадратные скобки ничего не ломали
+    text = (
+        f"🎯 СПИСОК ВАШИХ ЗАДАНИЙ:\n\n"
+        f"1️⃣ Яростный кликер:\n"
+        f"├ Задание: Сделать {q['clicks']['target']} кликов в сражениях\n"
+        f"├ Прогресс: ({q['clicks']['current']}/{q['clicks']['target']})\n"
+        f"└ Статус: {'✅ Награда получена' if q['clicks']['done'] else '⏳ В процессе кликов'}\n\n"
+        f"2️⃣ Мастер арены:\n"
+        f"├ Задание: Одержать {q['wins']['target']} победы над ботом или другом\n"
+        f"├ Прогресс: ({q['wins']['current']}/{q['wins']['target']})\n"
+        f"└ Статус: {'✅ Награда получена' if q['wins']['done'] else '⏳ В процессе побед'}\n"
+
+    )
+    bot.send_message(message.chat.id, text)
+
+
+@bot.message_handler(commands=['search'])
+def show_all_players(message):
+    current_username = message.from_user.username or message.from_user.first_name
+    all_players = list(users_data.keys())
+
+    if current_username in all_players:
+        all_players.remove(current_username)
+
+    if not all_players:
+        bot.reply_to(message, "😔 В боте пока нет других игроков.")
+        return
+
+    markup = types.InlineKeyboardMarkup(row_width=2)
+    for name in all_players:
+        button = types.InlineKeyboardButton(text=f"🎮 {name}", callback_data=f"select_{name}")
+        markup.add(button)
+
+    bot.reply_to(message, "✨ Выберите игрока, которого хотите вызвать на битву:", reply_markup=markup)
+
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("select_"))
+def handle_player_selection(call):
+    target_username = call.data.split("_")[1]
+    challenger_id = call.from_user.id
+    search_sessions[challenger_id] = target_username
+
+    bot.edit_message_text(
+        chat_id=call.message.chat.id,
+        message_id=call.message.message_id,
+        text=f" Вы выбрали игрока *{target_username}*.\n\nТеперь создайте комнату через режим с другом и **отправьте в этот чат её ID код (цифры)**:",
+        parse_mode="Markdown"
+    )
+    bot.register_next_step_handler(call.message, process_room_id)
+
+
+def process_room_id(message):
+    challenger_id = message.from_user.id
+    room_id = message.text.strip()
+
+    if challenger_id not in search_sessions:
+        return
+
+    target_username = search_sessions[challenger_id]
+    challenger_name = message.from_user.username or message.from_user.first_name
+    del search_sessions[challenger_id]
+
+    # Безопасно достаем chat_id соперника из структуры
+    target_chat_id = None
+    if target_username in users_data and isinstance(users_data[target_username], dict):
+        target_chat_id = users_data[target_username].get("chat_id")
+
+    if target_chat_id:
+        try:
+            bot.send_message(
+                target_chat_id,
+                f"⚔️ *Хочешь со мной поиграть в битву? Тогда присоединяйся!*\n\n"
+                f"Игрок *@{challenger_name}* вызывает тебя на бой!\n"
+                f"Для входа введите команду:\n`/join {room_id}`",
+                parse_mode="Markdown"
+            )
+            bot.reply_to(message, f"✅ Приглашение отправлено игроку *{target_username}* с кодом `{room_id}`!")
+        except Exception:
+            bot.reply_to(message, f"❌ Не удалось отправить сообщение игроку *{target_username}*.")
+    else:
+        bot.reply_to(message, f"❌ У игрока *{target_username}* не найден `chat_id`. Ему нужно написать боту команду `/start`.")
+
+
+
+if __name__ == '__main__':
+    print("Бот успешно запущен и слушает сервера Telegram...")
+    bot.infinity_polling(skip_pending=True)

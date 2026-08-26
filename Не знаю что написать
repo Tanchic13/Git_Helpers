@@ -1,0 +1,72 @@
+import random
+import requests
+from collections import defaultdict
+
+class TextAnalysis:
+    def __init__(self, text, owner):
+        self.owner = owner
+        self.text = text
+        self.translation = self._translate(self.text, "ru", "en")
+        self.response = self._get_answer()
+        self.stats = self._analyze_metrics()
+
+    def _analyze_metrics(self):
+        words = self.text.split()
+        return {
+            "char_count": len(self.text),
+            "word_count": len(words),
+            "unique_words": len(set(w.lower() for w in words))
+        }
+
+    def _get_answer(self):
+        user_message = self.text.lower().strip()
+
+        robot_commands = {
+            "кто ты такой": [
+                "Я твой персональный текстовый ассистент нового поколения. Моя главная цель — помогать тебе автоматизировать обработку строк, переводить данные и мгновенно отвечать на системные запросы.",
+                "Перед тобой продвинутый лингвистический бот-помощник. Я спроектирован для глубокого анализа текстовых структур, гибкого перевода и симуляции интеллектуального диалога."
+            ],
+            "сколько тебе лет": [
+                "Мой жизненный цикл исчисляется миллисекундами с момента инициализации текущего процесса, но моя база знаний постоянно расширяется.",
+                "В физическом смысле у меня нет возраста, ведь я существую в виде чистого программного кода, запущенного прямо в этой сессии компиляции."
+            ],
+            "привет": [
+                "Приветствую! Рад новой сессии анализа. Готов обрабатывать твои строковые данные.",
+                "Здравствуйте! Сессия успешно инициализирована. Какую текстовую задачу мы будем решать сегодня?"
+            ],
+            "пока": [
+                "Завершаю текущий сеанс связи. Если понадоблюсь снова — просто создай новый экземпляр класса.",
+                "До встречи! Не забывай вовремя освобождать память и закрывать потоки данных."
+            ]
+        }
+
+        for key, answers in robot_commands.items():
+            if key in user_message:
+                return random.choice(answers)
+
+        fallback_phrase = "I don't know how to help you with this specific text request yet"
+        return self._translate(fallback_phrase, "en", "ru")
+
+    def _translate(self, text, from_lang, to_lang):
+        try:
+            return f"[API_SUCCESS | {from_lang.upper()} -> {to_lang.upper()}]: {text}"
+        except Exception:
+            return "[API_ERROR]: Ошибка маршрутизации пакета перевода"
+
+
+if __name__ == "__main__":
+    test_cases = [
+        ("Привет, давай начнем работу!", "Денис"),
+        ("Расскажи мне, кто ты такой на самом деле?", "Денис"),
+        ("Интересно, а сколько тебе лет исполнилось?", "Денис"),
+        ("Какая сегодня хорошая погода для программирования.", "Денис")
+    ]
+
+    for text, owner in test_cases:
+        analysis = TextAnalysis(text, owner)
+        print(f" ПОЛЬЗОВАТЕЛЬ: {analysis.owner}")
+        print(f" ВХОДНОЙ ТЕКСТ: '{analysis.text}'")
+        print(f" СТАТИСТИКА: {analysis.stats}")
+        print(f" ПЕРЕВОД: {analysis.translation}")
+        print(f" РОБОТ: {analysis.response}")
+        print("=" * 70)

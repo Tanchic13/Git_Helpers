@@ -1,0 +1,64 @@
+import sqlite3
+
+# 1. Создаем подключение к базе данных (файл rutube_db.db создастся автоматически)
+conn = sqlite3.connect("rutube_db.db")
+cursor = conn.cursor()
+
+# 2. Создаем таблицу RuTube с указанными полями
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS RuTube (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    title TEXT NOT NULL,
+    link TEXT NOT NULL,
+    author TEXT,
+    release_date TEXT,
+    description TEXT
+)
+""")
+print("Таблица RuTube успешно создана.\n")
+
+# 3. Добавляем минимум 5 строк (записей) в таблицу
+videos_data = [
+    ("Изучение Python за 1 час", "https://rutube.ru", "Прог Блог", "2026-01-15", "Базовый курс по Python"),
+    ("Как настроить SQLite", "https://rutube.ru", "Код и Кофе", "2026-02-10", "Инструкция по базам данных"),
+    ("Обзор новых технологий 2026", "https://rutube.ru", "ТехноМир", "2026-02-28", "Главные тренды года"),
+    ("Рецепт идеальной пиццы", "https://rutube.ru", "Шеф Повар", "2025-12-25", "Готовим дома легко"),
+    ("Путешествие на Алтай", "https://rutube.ru", "Трэвел Блог", "2026-03-01", "Красивые виды природы")
+]
+
+cursor.executemany("""
+INSERT INTO RuTube (title, link, author, release_date, description)
+VALUES (?, ?, ?, ?, ?)
+""", videos_data)
+conn.commit()
+print("5 видео успешно добавлены в таблицу.\n")
+
+# 4. Выводим все данные из таблицы
+print("--- Все записи в таблице после добавления ---")
+cursor.execute("SELECT * FROM RuTube")
+for row in cursor.fetchall():
+    print(row)
+print()
+
+# 5. Изменяем одну запись с помощью UPDATE (например, меняем описание у видео с id=1)
+cursor.execute("""
+UPDATE RuTube 
+SET description = 'Обновленный и расширенный курс по Python' 
+WHERE id = 1
+""")
+conn.commit()
+print("Запись с id=1 успешно обновлена.\n")
+
+# 6. Удаляем одну запись с помощью DELETE (например, удаляем видео с id=4)
+cursor.execute("DELETE FROM RuTube WHERE id = 4")
+conn.commit()
+print("Запись с id=4 успешно удалена.\n")
+
+# Проверяем итоговый результат
+print("--- Итоговые записи в таблице ---")
+cursor.execute("SELECT * FROM RuTube")
+for row in cursor.fetchall():
+    print(row)
+
+# Закрываем соединение с базой данных
+conn.close()

@@ -1,0 +1,143 @@
+def get_user_slots(chat_id):
+    slots = [
+        {"name": "❌ Нету", "file_id": None},
+        {"name": "❌ Нету", "file_id": None},
+        {"name": "❌ Нету", "file_id": None},
+        {"name": "❌ Нету", "file_id": None}
+    ]
+    
+    if os.path.exists(DB_FILE):
+        with open(DB_FILE, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+            
+        index = 0
+        for line in lines:
+            if line.strip():
+                parts = line.strip().split(";")
+                if len(parts) == 3:
+                    uid, name, file_id = parts
+                    if int(uid) == chat_id and index < 4:
+                        slots[index] = {"name": f"💎 {name}", "file_id": file_id}
+                        index += 1
+    return slots
+
+
+# --- 1. ПРИЕМ КАРТИНКИ И ТЕКСТОВОГО НАЗВАНИЯ ---
+@bot.message_handler(content_types=['photo'])
+def handle_photo(message):
+    chat_id = message.chat.id
+    
+    # Защита от переполнения альбома (максимум 4)
+    current_slots = get_user_slots(chat_id)
+    filled_count = sum(1 for slot in current_slots if "❌ Нету" not in slot['name'])
+    
+    if filled_count >= 4:
+        bot.send_message(chat_id, "🔒 Все 4 слота заняты! Сначала удалите что-то через команду /1delete")
+        return
+
+    # Запоминаем уникальный Telegram-код картинки (он весит копейки и не лагает)
+    photo_file_id = message.photo[-1].file_id
+    
+    msg = bot.send_message(chat_id, "📸 Картинку принял! Напишите для неё короткое название:")
+    
+    def process_name_save(next_message):
+        name = next_message.text.strip()
+        
+        if not name or ";" in name:
+            bot.send_message(chat_id, "❌ Неверное название. Скиньте фото заново.")
+            return
+            
+        # Записываем всё в одну строчку в файл: ID;Название;Код_Фото
+        with open(DB_FILE, "a", encoding="utf-8") as f:
+            f.write(f"{chat_id};{name};{photo_file_id}\n")
+            
+        bot.send_message(chat_id, f"✅ Картинка успешно сохранена под именем '{name}'!\nПосмотреть альбом: /album")
+
+    bot.register_next_step_handler(msg, process_name_save)
+
+
+# --- 2. ПРОСМОТР АЛЬБОМА С КНОПКАМИ КОПИРОВАНИЯ ---
+@bot.message_handler(commands=['album'])
+def show_album(message):
+    chat_id = message.chat.id
+    slots = get_user_slots(chat_id)
+    
+    # Формируем красивый текст
+    album_text = (
+        "📖 Ваш альбом сохранений (4 слота):\n\n"
+        f"1. {slots[0]['name']}\n"
+        f"2. {slots[1]['name']}\n"
+        f"3. {slots[2]['name']}\n"
+        f"4. {slots[3]['name']}\n\n"
+        "📥 Чтобы добавить: просто пришлите мне фото\n"
+        "🗑 Чтобы удалить: введите /1delete"
+    )
+    
+    # Создаем Inline-кнопки под сообщением для копирования деталей
+    markup = types.InlineKeyboardMarkup()
+    
+    for index, slot in enumerate(slots):
+        if slot['file_id']: # Если слот не пустой, делаем для него кнопку
+            clean_name = slot['name'].replace("💎 ", "")
+            # Кнопка со специальным текстом для копирования в один клик
+            markup.add(types.InlineKeyboardButton(
+                text=f"📋 Скопировать код: {clean_name}", 
+                callback_data=f"copy_{index}"
+            ))
+            
+    bot.send_message(chat_id, album_text, parse_mode="Markdown", reply_markup=markup)
+
+
+# --- Обработка нажатия на кнопку копирования ---
+@bot.callback_query_handler(func=lambda call: call.data.startswith("copy_"))
+def handle_copy_code(call):
+    chat_id = call.message.chat.id
+    index = int(call.data.split("_")[1])
+    
+    slots = get_user_slots(chat_id)
+    file_id = slots[index]['file_id']
+    clean_name = slots[index]['name'].replace("💎 ", "")
+    
+    if file_id:
+        # Отправляем код картинки моноширинным шрифтом (при клике на него на телефоне он сам скопируется!)
+        bot.send_message(
+            chat_id, 
+            f"Вот код для картинки {clean_name} (нажми на него, чтобы скопировать):\n\n`{file_id}`",
+            parse_mode="Markdown"
+        )
+    # Гасим часики на кнопке
+    bot.answer_callback_query(call.id)
+
+
+# --- 3. УДАЛЕНИЕ ПО НАЗВАНИЮ (/1delete) ---
+@bot.message_handler(commands=['1delete'])
+def delete_name(message):
+    chat_id = message.chat.id
+    msg = bot.send_message(chat_id, "🗑 Введите точное название картинки, которую хотите удалить:")
+    
+    def process_delete(next_message):
+        name_to_delete = next_message.text.strip()
+        deleted = False
+        
+        if os.path.exists(DB_FILE):
+            with open(DB_FILE, "r", encoding="utf-8") as f:
+                lines = f.readlines()
+                
+            with open(DB_FILE, "w", encoding="utf-8") as f:
+                for line in lines:
+                    if line.strip():
+                        parts = line.strip().split(";")
+                        if len(parts) == 3:
+                            uid, name, file_id = parts
+                            # Если нашли совпадение — удаляем (не записываем обратно)
+                            if int(uid) == chat_id and name == name_to_delete and not deleted:
+                                deleted = True
+                                continue
+                        f.write(line)
+                        
+        if deleted:
+            bot.send_message(chat_id, f"🗑 Картинка '{name_to_delete}' успешно удалена из альбома!")
+        else:
+            bot.send_message(chat_id, f"❌ Название '{name_to_delete}' не найдено в вашем списке.")
+
+    bot.register_next_step_handler(msg, process_delete)

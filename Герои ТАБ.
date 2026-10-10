@@ -1,0 +1,160 @@
+import sqlite3
+
+conn = sqlite3.connect("cinema.db")
+cursor = conn.cursor()
+
+cursor.execute("PRAGMA foreign_keys = ON;")
+
+cursor.execute("DROP TABLE IF EXISTS movie_genres;")
+cursor.execute("DROP TABLE IF EXISTS movies;")
+cursor.execute("DROP TABLE IF EXISTS directors;")
+
+cursor.execute("""
+CREATE TABLE directors (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL
+)""")
+
+cursor.execute("""
+CREATE TABLE movies (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    title TEXT NOT NULL,
+    director_id INTEGER,
+    budget INTEGER,
+    release_date TEXT,
+    FOREIGN KEY (director_id) REFERENCES directors(id)
+)""")
+
+cursor.execute("""
+CREATE TABLE movie_genres (
+    movie_id INTEGER,
+    genre_id INTEGER,
+    PRIMARY KEY (movie_id, genre_id)
+)""")
+
+directors_data = [
+    (1, "Кристофер Нолан"),
+    (2, "Квентин Тарантино"),
+    (3, "Мартин Скорсезе"),
+    (4, "Стивен Спилберг"),
+    (5, "Джеймс Кэмерон"),
+    (6, "Дени Вильнёв"),
+    (7, "Хаяо Миядзаки"),
+    (8, "Ридли Скотт"),
+    (9, "Гільєрмо дель Торо"),
+    (10, "Режиссер Новичок")
+]
+cursor.executemany("INSERT INTO directors (id, name) VALUES (?, ?)", directors_data)
+
+movies_data = [
+    ("Начало", 1, 160000000, "2010-07-16"),
+    ("Интерстеллар", 1, 165000000, "2014-11-07"),
+    ("Оппенгеймер", 1, 100000000, "2023-07-21"),
+    ("Довод", 1, 205000000, "2020-08-26"),
+    
+    ("Криминальное чтиво", 2, 8500000, "1994-10-14"),
+    ("Джанго освобожденный", 2, 100000000, "2012-12-25"),
+    ("Бешеные псы", 2, 1200000, "1992-09-02"),
+    
+    ("Волк с Уолл-стрит", 3, 100000000, "2013-12-25"),
+    ("Ирландец", 3, 159000000, "2019-11-01"),
+    ("Славные парни", 3, 25000000, "1990-09-19"),
+    
+    ("Парк Юрского периода", 4, 63000000, "1993-06-11"),
+    ("Спасти рядового Райана", 4, 70000000, "1998-07-24"),
+    ("Список Шиндлера", 4, 22000000, "1993-12-15"),
+    
+    ("Аватар", 5, 237000000, "2009-12-18"),
+    ("Титаник", 5, 200000000, "1997-12-19"),
+    ("Терминатор 2: Судный день", 5, 102000000, "1991-07-03"),
+    
+    ("Дюна", 6, 165000000, "2021-09-16"),
+    ("Бегущий по лезвию 2049", 6, 150000000, "2017-10-06"),
+    
+    ("Унесенные призраками", 7, 19000000, "2001-07-20"),
+    ("Ходячий замок", 7, 24000000, "2004-11-20"),
+    
+    ("Гладиатор", 8, 103000000, "2000-05-05"),
+    ("Чужой", 8, 11000000, "1979-05-25"),
+    
+    ("Лабиринт Фавна", 9, 19000000, "2006-10-11"),
+    ("Форма воды", 9, 20000000, "2017-12-01"),
+    ("Студенческая короткометражка", 9, 0, "1985-01-01")
+]
+cursor.executemany("INSERT INTO movies (title, director_id, budget, release_date) VALUES (?, ?, ?, ?)", movies_data)
+
+genres_data = [
+    (1, 101), (1, 102), (1, 106),
+    (2, 101), (2, 103),
+    (3, 103),
+    (4, 101), (4, 102),
+    (5, 104), (5, 106),
+    (6, 103),
+    (7, 104), (7, 106),
+    (8, 103),
+    (9, 104), (9, 103),
+    (14, 101), (14, 102),
+    (18, 105),
+    (19, 105)
+]
+cursor.executemany("INSERT INTO movie_genres (movie_id, genre_id) VALUES (?, ?)", genres_data)
+conn.commit()
+
+
+def run_and_print_cool(title, query, headers):
+    print(f"\n🔥 {title.upper()} 🔥")
+    print("=" * 70)
+    header_format = "".join([f"{{:<{w}}}" for w in headers.values()])
+    print(header_format.format(*headers.keys()))
+    print("-" * 70)
+    
+    cursor.execute(query)
+    rows = cursor.fetchall()
+    for row in rows:
+        formatted_row = []
+        for val in row:
+            if isinstance(val, int) and val > 1000:
+                formatted_row.append(f"{val:,}".replace(",", " "))
+            else:
+                formatted_row.append(str(val))
+        print(header_format.format(*formatted_row))
+    print("=" * 70)
+
+
+run_and_print_cool(
+    "1. Последний релиз каждого мастера", 
+    """SELECT d.name, MAX(m.release_date) FROM directors d 
+       INNER JOIN movies m ON d.id = m.director_id GROUP BY d.id, d.name""",
+    {"ИМЯ РЕЖИССЕРА": 28, "ПОСЛЕДНИЙ ВЫПУСК": 20}
+)
+
+run_and_print_cool(
+    "2. Суммарные бюджеты кинокомпаний (в долларах)", 
+    """SELECT d.name, SUM(m.budget) FROM directors d 
+       INNER JOIN movies m ON d.id = m.director_id GROUP BY d.id, d.name ORDER BY SUM(m.budget) DESC""",
+    {"МАСТЕР КИНЕМАТОГРАФА": 28, "ОБЩИЙ БЮДЖЕТ ($)": 25}
+)
+
+run_and_print_cool(
+    "3. Количество отснятых шедевров", 
+    """SELECT d.name, COUNT(m.id) FROM directors d 
+       INNER JOIN movies m ON d.id = m.director_id GROUP BY d.id, d.name ORDER BY COUNT(m.id) DESC""",
+    {"ИМЯ РЕЖИССЕРА": 28, "КОЛ-ВО ФИЛЬМОВ": 15}
+)
+
+run_and_print_cool(
+    "4. Плотность жанров в картинах", 
+    """SELECT m.title, COUNT(mg.genre_id) FROM movies m 
+       INNER JOIN movie_genres mg ON m.id = mg.movie_id GROUP BY m.id, m.title ORDER BY COUNT(mg.genre_id) DESC""",
+    {"НАЗВАНИЕ КИНФИЛЬМА": 32, "КОЛ-ВО ЖАНРОВ": 15}
+)
+
+run_and_print_cool(
+    "5. Разнообразие киножанров у режиссеров", 
+    """SELECT d.name, COUNT(DISTINCT mg.genre_id) FROM directors d 
+       INNER JOIN movies m ON d.id = m.director_id 
+       INNER JOIN movie_genres mg ON m.id = mg.movie_id GROUP BY d.id, d.name""",
+    {"РЕЖИССЕР": 28, "УНИКАЛЬНЫХ ЖАНРОВ": 20}
+)
+
+conn.close()
